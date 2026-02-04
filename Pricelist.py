@@ -4,7 +4,7 @@ import zipfile
 import io
 
 st.set_page_config(page_title="Pricelist Generator", layout="wide")
-st.title("📦 Pricelist File Generator (SKU x Pricelist Factors)")
+st.title("📦 Pricelist File Generator (BasePrice x Pricelist Factors)")
 
 st.write("""
 ### Upload 3 Files:
