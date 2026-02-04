@@ -2,9 +2,11 @@ import streamlit as st
 import pandas as pd
 import zipfile
 import io
+import tempfile
+import os
 
 st.set_page_config(page_title="Pricelist Generator", layout="wide")
-st.title("📦 Pricelist File Generator (BasePrice x Pricelist Factors)")
+st.title("📦 Pricelist File Generator (Base x Factor x RM)")
 
 st.write("""
 ### Upload 3 Files:
@@ -13,6 +15,7 @@ st.write("""
 3) RM Mapping file → columns: **PricelistName, RMName**
 """)
 
+# --- File uploads ---
 base_file = st.file_uploader("Upload Base Price File (CSV)", type=["csv"])
 factor_file = st.file_uploader("Upload Pricelist Factors File (CSV)", type=["csv"])
 rm_file = st.file_uploader("Upload RM Mapping File (CSV)", type=["csv"])
@@ -33,7 +36,7 @@ if base_file and factor_file and rm_file:
     if df_base is None or df_factor is None or df_rm is None:
         st.stop()
 
-    # Validate columns
+    # --- Validate columns ---
     if not {"SKU", "BasePrice"}.issubset(df_base.columns):
         st.error("❌ Base Price file must contain: SKU, BasePrice")
         st.stop()
@@ -46,27 +49,41 @@ if base_file and factor_file and rm_file:
         st.error("❌ RM Mapping file must contain: PricelistName, RMName")
         st.stop()
 
-    # Clean
+    # --- Clean BasePrice ---
     df_base["SKU"] = df_base["SKU"].astype(str).str.strip()
-    df_factor["PricelistName"] = df_factor["PricelistName"].astype(str).str.strip()
-    df_rm["PricelistName"] = df_rm["PricelistName"].astype(str).str.strip()
-    df_rm["RMName"] = df_rm["RMName"].astype(str).str.strip()
-
+    df_base["BasePrice"] = (
+        df_base["BasePrice"]
+        .astype(str)
+        .str.strip()
+        .str.replace(" ", "", regex=False)
+        .str.replace(",", "", regex=False)
+    )
     df_base["BasePrice"] = pd.to_numeric(df_base["BasePrice"], errors="coerce")
-    df_factor["Factor"] = pd.to_numeric(df_factor["Factor"], errors="coerce")
-
     if df_base["BasePrice"].isna().any():
         st.error("❌ BasePrice has non-numeric values. Please fix your base file.")
         st.stop()
 
+    # --- Clean Factor ---
+    df_factor["PricelistName"] = df_factor["PricelistName"].astype(str).str.strip()
+    df_factor["Factor"] = (
+        df_factor["Factor"]
+        .astype(str)
+        .str.strip()
+        .str.replace(" ", "", regex=False)
+        .str.replace(",", ".", regex=False)
+    )
+    df_factor["Factor"] = pd.to_numeric(df_factor["Factor"], errors="coerce")
     if df_factor["Factor"].isna().any():
         st.error("❌ Factor has non-numeric values. Please fix your factor file.")
         st.stop()
 
-    # Check pricelist consistency
+    # --- Clean RM mapping ---
+    df_rm["PricelistName"] = df_rm["PricelistName"].astype(str).str.strip()
+    df_rm["RMName"] = df_rm["RMName"].astype(str).str.strip()
+
+    # Check that all RM pricelists exist in factor file
     factor_pricelists = set(df_factor["PricelistName"].unique())
     rm_pricelists = set(df_rm["PricelistName"].unique())
-
     missing_in_factor = rm_pricelists - factor_pricelists
     if missing_in_factor:
         st.error(
@@ -77,42 +94,63 @@ if base_file and factor_file and rm_file:
 
     st.success("✅ Files validated successfully. Generating ZIP with RM folders...")
 
-    # Create zip in memory
+    # --- Progress bar ---
+    total_tasks = len(df_rm)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    task_counter = 0
+
+    # --- Create ZIP in memory ---
     zip_buffer = io.BytesIO()
-
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-
-        # Loop through RM groups
-        for rm_name, rm_group in df_rm.groupby("RMName"):
-
+        for idx, (rm_name, rm_group) in enumerate(df_rm.groupby("RMName")):
             for _, rm_row in rm_group.iterrows():
                 pricelist_name = rm_row["PricelistName"]
-
-                # Get factor
                 factor = df_factor.loc[df_factor["PricelistName"] == pricelist_name, "Factor"].iloc[0]
 
-                # Generate output
+                # Generate output CSV
                 df_out = df_base.copy()
                 df_out["NewPrice"] = (df_out["BasePrice"] * factor).round(2)
                 df_out = df_out[["SKU", "NewPrice"]]
 
-                # Save as CSV
-                csv_buffer = io.StringIO()
-                df_out.to_csv(csv_buffer, index=False)
-
-                # Put inside RM folder
+                # Write to ZIP inside RM folder
                 safe_rm = rm_name.replace("/", "_").replace("\\", "_")
                 file_path = f"{safe_rm}/{pricelist_name}.csv"
-
+                csv_buffer = io.StringIO()
+                df_out.to_csv(csv_buffer, index=False)
                 zf.writestr(file_path, csv_buffer.getvalue())
+
+                # --- Update progress ---
+                task_counter += 1
+                progress_bar.progress(task_counter / total_tasks)
+                status_text.text(f"Processing RM: {rm_name} | Pricelist: {pricelist_name}")
+
+    progress_bar.empty()
+    status_text.text("✅ All pricelists generated successfully!")
 
     zip_buffer.seek(0)
 
-    st.download_button(
-        label="⬇️ Download ZIP (RM Folders + Pricelist Files)",
-        data=zip_buffer,
-        file_name="generated_pricelists_by_rm.zip",
-        mime="application/zip"
-    )
+    # --- Save to temporary file for robust download ---
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
+        tmp_file.write(zip_buffer.getvalue())
+        tmp_file_path = tmp_file.name
 
-    st.info("📌 ZIP generated successfully with RM-wise folders.")
+    # --- Download button ---
+    with open(tmp_file_path, "rb") as f:
+        st.download_button(
+            label="⬇️ Download ZIP (RM Folders + Pricelist Files)",
+            data=f,
+            file_name="generated_pricelists_by_rm.zip",
+            mime="application/zip"
+        )
+
+    # --- Cleanup temp file after session ends ---
+    def cleanup_temp_file(path):
+        try:
+            os.remove(path)
+        except:
+            pass
+
+    if "temp_zip_path" in st.session_state:
+        cleanup_temp_file(st.session_state["temp_zip_path"])
+    st.session_state["temp_zip_path"] = tmp_file_path
