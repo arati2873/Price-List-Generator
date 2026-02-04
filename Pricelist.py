@@ -130,27 +130,9 @@ if base_file and factor_file and rm_file:
 
     zip_buffer.seek(0)
 
-    # --- Save to temporary file for robust download ---
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
-        tmp_file.write(zip_buffer.getvalue())
-        tmp_file_path = tmp_file.name
-
-    # --- Download button ---
-    with open(tmp_file_path, "rb") as f:
-        st.download_button(
-            label="⬇️ Download ZIP (RM Folders + Pricelist Files)",
-            data=f,
-            file_name="generated_pricelists_by_rm.zip",
-            mime="application/zip"
-        )
-
-    # --- Cleanup temp file after session ends ---
-    def cleanup_temp_file(path):
-        try:
-            os.remove(path)
-        except:
-            pass
-
-    if "temp_zip_path" in st.session_state:
-        cleanup_temp_file(st.session_state["temp_zip_path"])
-    st.session_state["temp_zip_path"] = tmp_file_path
+    st.download_button(
+        label="⬇️ Download ZIP (RM Folders + Pricelist Files)",
+        data=zip_buffer.getvalue(),  # <- memory-safe
+        file_name="generated_pricelists_by_rm.zip",
+        mime="application/zip"
+    )
