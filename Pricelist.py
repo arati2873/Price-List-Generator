@@ -2,11 +2,9 @@ import streamlit as st
 import pandas as pd
 import zipfile
 import io
-import tempfile
-import os
 
 st.set_page_config(page_title="Pricelist Generator", layout="wide")
-st.title("📦 Pricelist File Generator (Base x Factor x RM)")
+st.title("📦 Pricelist File Generator (BasePrice x Factor x RM)")
 
 st.write("""
 ### Upload 3 Files:
@@ -92,47 +90,48 @@ if base_file and factor_file and rm_file:
         )
         st.stop()
 
-    st.success("✅ Files validated successfully. Generating ZIP with RM folders...")
+    st.success("✅ Files validated successfully. Ready to generate ZIP.")
 
-    # --- Progress bar ---
-    total_tasks = len(df_rm)
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    task_counter = 0
+    # --- Lazy ZIP generation on button click ---
+    if st.button("⬇️ Generate & Download ZIP"):
+        zip_buffer = io.BytesIO()
+        
+        # Progress bar + status
+        total_tasks = len(df_rm)
+        task_counter = 0
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for rm_name, rm_group in df_rm.groupby("RMName"):
+                for _, rm_row in rm_group.iterrows():
+                    pricelist_name = rm_row["PricelistName"]
+                    factor = df_factor.loc[df_factor["PricelistName"] == pricelist_name, "Factor"].iloc[0]
 
-    # --- Create ZIP in memory ---
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for idx, (rm_name, rm_group) in enumerate(df_rm.groupby("RMName")):
-            for _, rm_row in rm_group.iterrows():
-                pricelist_name = rm_row["PricelistName"]
-                factor = df_factor.loc[df_factor["PricelistName"] == pricelist_name, "Factor"].iloc[0]
+                    # Generate output CSV
+                    df_out = df_base.copy()
+                    df_out["NewPrice"] = (df_out["BasePrice"] * factor).round(2)
+                    df_out = df_out[["SKU", "NewPrice"]]
 
-                # Generate output CSV
-                df_out = df_base.copy()
-                df_out["NewPrice"] = (df_out["BasePrice"] * factor).round(2)
-                df_out = df_out[["SKU", "NewPrice"]]
+                    # Write to ZIP inside RM folder
+                    safe_rm = rm_name.replace("/", "_").replace("\\", "_")
+                    file_path = f"{safe_rm}/{pricelist_name}.csv"
+                    csv_buffer = io.StringIO()
+                    df_out.to_csv(csv_buffer, index=False)
+                    zf.writestr(file_path, csv_buffer.getvalue())
 
-                # Write to ZIP inside RM folder
-                safe_rm = rm_name.replace("/", "_").replace("\\", "_")
-                file_path = f"{safe_rm}/{pricelist_name}.csv"
-                csv_buffer = io.StringIO()
-                df_out.to_csv(csv_buffer, index=False)
-                zf.writestr(file_path, csv_buffer.getvalue())
+                    # Update progress
+                    task_counter += 1
+                    progress_bar.progress(task_counter / total_tasks)
+                    status_text.text(f"Processing RM: {rm_name} | Pricelist: {pricelist_name}")
+        
+        zip_buffer.seek(0)
+        progress_bar.empty()
+        status_text.text("✅ All pricelists generated successfully!")
 
-                # --- Update progress ---
-                task_counter += 1
-                progress_bar.progress(task_counter / total_tasks)
-                status_text.text(f"Processing RM: {rm_name} | Pricelist: {pricelist_name}")
-
-    progress_bar.empty()
-    status_text.text("✅ All pricelists generated successfully!")
-
-    zip_buffer.seek(0)
-
-    st.download_button(
-        label="⬇️ Download ZIP (RM Folders + Pricelist Files)",
-        data=zip_buffer.getvalue(),  # <- memory-safe
-        file_name="generated_pricelists_by_rm.zip",
-        mime="application/zip"
-    )
+        st.download_button(
+            label="⬇️ Download ZIP (RM Folders + Pricelist Files)",
+            data=zip_buffer.getvalue(),
+            file_name="generated_pricelists_by_rm.zip",
+            mime="application/zip"
+        )
